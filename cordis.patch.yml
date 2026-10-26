@@ -1,0 +1,6 @@
+- insert:
+    - id: session-page-clamp
+      name: dsh-session-page-clamp
+      config:
+        maxMessages: 50
+        enabled: true

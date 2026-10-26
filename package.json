@@ -1,0 +1,20 @@
+{
+  "name": "dsh-session-page-clamp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Host-only cap for DSH session/page message budgets",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
