@@ -131,6 +131,25 @@ test('follow: clamps turnWindow.minMessages and preserves minTurns without mutat
   ctx.dispose()
 })
 
+test('follow: malformed minMessages is copied but never coerced', () => {
+  const { svc, calls } = service()
+  const ctx = context(svc)
+  apply(ctx, { maxMessages: 20 })
+  for (const minMessages of ['5', true, [7]]) {
+    const turnWindow = { minMessages, minTurns: 3 }
+    const input = request({ maxMessages: 500, turnWindow })
+    svc.follow(input)
+    assert.equal(calls.at(-1).request.maxMessages, 20)
+    assert.equal(calls.at(-1).request.turnWindow.minMessages, minMessages)
+    assert.equal(calls.at(-1).request.turnWindow.minTurns, 3)
+    assert.deepEqual(turnWindow, { minMessages, minTurns: 3 })
+  }
+  svc.follow(request({ maxMessages: 500, turnWindow: 'not-an-object' }))
+  assert.equal(calls.at(-1).request.maxMessages, 20)
+  assert.equal(calls.at(-1).request.turnWindow, 'not-an-object')
+  ctx.dispose()
+})
+
 test('follow: cleanup restores the exact original descriptor', () => {
   const { svc } = service()
   const pageDescriptor = Object.getOwnPropertyDescriptor(svc, 'page')
@@ -266,6 +285,26 @@ test('C5: neither patch site works: fail loudly without leaving a prototype wrap
   Object.freeze(proto)
   assert.throws(() => apply(context(Object.freeze(Object.create(proto)))), /cannot install/)
   assert.throws(() => apply(context({})), /sessionController.page.*function/)
+})
+
+test('C5: a failed follow install rolls the page wrapper back', () => {
+  const { svc } = service()
+  const originalPage = svc.page
+  const pageDescriptor = Object.getOwnPropertyDescriptor(svc, 'page')
+  const proto = {}
+  Object.setPrototypeOf(svc, proto)
+  Object.defineProperty(svc, 'follow', {
+    value: svc.follow,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  })
+  const ctx = context(svc)
+  assert.throws(() => apply(ctx), /cannot install.*sessionController\.follow/)
+  assert.equal(svc.page, originalPage)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'page'), pageDescriptor)
+  assert.equal('follow' in proto, false)
+  assert.equal(ctx.cleanups.length, 0)
 })
 
 test('C6: duplicate mounts do not stack page or follow; dispose and remount wrap once', () => {
