@@ -25,6 +25,7 @@ function service() {
     calls.push({ receiver: this, request, signal })
     return promise
   } }
+  svc.follow = svc.page
   return { svc, calls, promise }
 }
 
@@ -90,6 +91,59 @@ test('C3: absent, at-cap, below-cap and invalid maxMessages pass through by iden
   ctx.dispose()
 })
 
+test('follow: clamps above-cap maxMessages with a new non-mutating request', () => {
+  const { svc, calls } = service()
+  const ctx = context(svc)
+  apply(ctx, { maxMessages: 20 })
+  const input = Object.freeze(request({ maxMessages: 500, beforeSeq: 99 }))
+  svc.follow(input)
+  assert.notEqual(calls[0].request, input)
+  assert.deepEqual(calls[0].request, request({ maxMessages: 20, beforeSeq: 99 }))
+  assert.equal(input.maxMessages, 500)
+  ctx.dispose()
+})
+
+test('follow: at and below cap pass through by request identity', () => {
+  const { svc, calls } = service()
+  const ctx = context(svc)
+  apply(ctx, { maxMessages: 20 })
+  for (const maxMessages of [20, 1]) {
+    const input = request({ maxMessages })
+    svc.follow(input)
+    assert.equal(calls.at(-1).request, input)
+  }
+  ctx.dispose()
+})
+
+test('follow: clamps turnWindow.minMessages and preserves minTurns without mutation', () => {
+  const { svc, calls } = service()
+  const ctx = context(svc)
+  apply(ctx, { maxMessages: 20 })
+  const turnWindow = Object.freeze({ minMessages: 50, minTurns: 3, marker: 'kept' })
+  const input = Object.freeze(request({ maxMessages: 500, turnWindow }))
+  svc.follow(input)
+  assert.deepEqual(calls[0].request, request({
+    maxMessages: 20,
+    turnWindow: { minMessages: 20, minTurns: 3, marker: 'kept' },
+  }))
+  assert.notEqual(calls[0].request.turnWindow, turnWindow)
+  assert.deepEqual(turnWindow, { minMessages: 50, minTurns: 3, marker: 'kept' })
+  ctx.dispose()
+})
+
+test('follow: cleanup restores the exact original descriptor', () => {
+  const { svc } = service()
+  const pageDescriptor = Object.getOwnPropertyDescriptor(svc, 'page')
+  const followDescriptor = Object.getOwnPropertyDescriptor(svc, 'follow')
+  const ctx = context(svc)
+  apply(ctx)
+  assert.notEqual(svc.page, pageDescriptor.value)
+  assert.notEqual(svc.follow, followDescriptor.value)
+  ctx.dispose()
+  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'page'), pageDescriptor)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'follow'), followDescriptor)
+})
+
 test('C4: Config exposes Standard Schema defaults and apply uses the default cap', () => {
   assert.equal(Config['~standard'].version, 1)
   assert.deepEqual(Config['~standard'].validate({}), { value: { maxMessages: 50, enabled: true } })
@@ -131,18 +185,25 @@ test('C4: invalid config fails loudly before any wrapping, including when disabl
   }
 })
 
-test('C5/C6: installs on the reached instance, restores its exact own descriptor', () => {
+test('C5/C6: installs on the reached instance, restores exact page and follow descriptors', () => {
   const { svc, calls } = service()
-  const descriptor = Object.getOwnPropertyDescriptor(svc, 'page')
+  const pageDescriptor = Object.getOwnPropertyDescriptor(svc, 'page')
+  const followDescriptor = Object.getOwnPropertyDescriptor(svc, 'follow')
   const ctx = context(svc)
   apply(ctx)
-  const wrapper = svc.page
-  assert.notEqual(wrapper, descriptor.value)
-  assert.equal(ctx.sessionController.page, wrapper)
+  const pageWrapper = svc.page
+  const followWrapper = svc.follow
+  assert.notEqual(pageWrapper, pageDescriptor.value)
+  assert.notEqual(followWrapper, followDescriptor.value)
+  assert.equal(ctx.sessionController.page, pageWrapper)
+  assert.equal(ctx.sessionController.follow, followWrapper)
   svc.page(request({ maxMessages: 500 }))
+  svc.follow(request({ maxMessages: 500 }))
   assert.equal(calls[0].request.maxMessages, 50)
+  assert.equal(calls[1].request.maxMessages, 50)
   ctx.dispose()
-  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'page'), descriptor)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'page'), pageDescriptor)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(svc, 'follow'), followDescriptor)
 })
 
 test('C5/C6: inherited instance shadow is removed on disposal', () => {
@@ -181,13 +242,18 @@ test('C5: read-back detects a proxy ignoring successful instance assignment', ()
   })
   const ctx = context(svc)
   apply(ctx)
-  assert.equal(sets, 1)
+  assert.equal(sets, 2)
   assert.notEqual(svc.page, original)
+  assert.notEqual(svc.follow, original)
   assert.equal(svc.page, proto.page)
+  assert.equal(svc.follow, proto.follow)
   svc.page(request({ maxMessages: 500 }))
+  svc.follow(request({ maxMessages: 500 }))
   assert.equal(calls[0].request.maxMessages, 50)
+  assert.equal(calls[1].request.maxMessages, 50)
   ctx.dispose()
   assert.equal(proto.page, original)
+  assert.equal(proto.follow, original)
 })
 
 test('C5: neither patch site works: fail loudly without leaving a prototype wrapper', () => {
@@ -202,48 +268,68 @@ test('C5: neither patch site works: fail loudly without leaving a prototype wrap
   assert.throws(() => apply(context({})), /sessionController.page.*function/)
 })
 
-test('C6: duplicate mounts do not stack; dispose and remount wrap exactly once', () => {
+test('C6: duplicate mounts do not stack page or follow; dispose and remount wrap once', () => {
   const { svc, calls } = service()
-  const original = svc.page
+  const originalPage = svc.page
+  const originalFollow = svc.follow
   const first = context(svc)
   const duplicate = context(svc)
   apply(first, { maxMessages: 50 })
-  const wrapper = svc.page
-  assert.ok(Object.getOwnPropertySymbols(wrapper).some(symbol => typeof wrapper[symbol] === 'boolean'))
+  const pageWrapper = svc.page
+  const followWrapper = svc.follow
+  assert.ok(Object.getOwnPropertySymbols(pageWrapper).some(symbol => typeof pageWrapper[symbol] === 'boolean'))
+  assert.ok(Object.getOwnPropertySymbols(followWrapper).some(symbol => typeof followWrapper[symbol] === 'boolean'))
   apply(duplicate, { maxMessages: 10 })
-  assert.equal(svc.page, wrapper)
+  assert.equal(svc.page, pageWrapper)
+  assert.equal(svc.follow, followWrapper)
   assert.equal(duplicate.cleanups.length, 0)
   svc.page(request({ maxMessages: 500 }))
-  assert.equal(calls.length, 1)
+  svc.follow(request({ maxMessages: 500 }))
+  assert.equal(calls.length, 2)
   assert.equal(calls[0].request.maxMessages, 50)
+  assert.equal(calls[1].request.maxMessages, 50)
   duplicate.dispose()
   first.dispose()
-  assert.equal(svc.page, original)
+  assert.equal(svc.page, originalPage)
+  assert.equal(svc.follow, originalFollow)
   const remount = context(svc)
   apply(remount, { maxMessages: 25 })
-  assert.notEqual(svc.page, wrapper)
+  assert.notEqual(svc.page, pageWrapper)
+  assert.notEqual(svc.follow, followWrapper)
   svc.page(request({ maxMessages: 500 }))
-  assert.equal(calls.length, 2)
-  assert.equal(calls[1].request.maxMessages, 25)
+  svc.follow(request({ maxMessages: 500 }))
+  assert.equal(calls.length, 4)
+  assert.equal(calls[2].request.maxMessages, 25)
+  assert.equal(calls[3].request.maxMessages, 25)
   remount.dispose()
-  assert.equal(svc.page, original)
+  assert.equal(svc.page, originalPage)
+  assert.equal(svc.follow, originalFollow)
 })
 
-test('C7: forwards this and AbortSignal and returns the exact original promise', () => {
+test('C7: page and follow forward this and AbortSignal and return their exact original results', () => {
   const { svc, calls, promise } = service()
+  const followResult = (async function* () {})()
+  svc.follow = function(request, signal) {
+    calls.push({ receiver: this, request, signal })
+    return followResult
+  }
   const ctx = context(svc)
   apply(ctx)
   const receiver = { marker: true }
   const signal = new AbortController().signal
   assert.equal(svc.page.call(receiver, request({ maxMessages: 500 }), signal), promise)
+  assert.equal(svc.follow.call(receiver, request({ maxMessages: 500 }), signal), followResult)
   assert.equal(calls[0].receiver, receiver)
   assert.equal(calls[0].signal, signal)
+  assert.equal(calls[1].receiver, receiver)
+  assert.equal(calls[1].signal, signal)
   ctx.dispose()
 })
 
 test('C7: synchronous errors and rejected promises propagate unchanged without logging', async () => {
   const failure = new Error('sentinel')
   const svc = { page() { throw failure } }
+  svc.follow = svc.page
   const ctx = context(svc)
   ctx.logger = { error() { assert.fail('unexpected logging') }, warn() { assert.fail('unexpected logging') } }
   apply(ctx)
@@ -282,9 +368,14 @@ test('C5 revised/C6/C7: real Cordis gateway dispatch clamps through raw service 
       calls.push({ request, signal, helper: this.helper() })
       return promise
     }
+    follow(request, signal) {
+      calls.push({ request, signal, helper: this.helper() })
+      return promise
+    }
   }
   const raw = new SessionController(ctx)
   const original = raw.page
+  const originalFollow = raw.follow
   const originalDescriptor = Object.getOwnPropertyDescriptor(raw, 'page')
   assert.equal(originalDescriptor, undefined)
   assert.equal(ctx.sessionController[Symbol.for('cordis.original')], raw)
@@ -293,24 +384,35 @@ test('C5 revised/C6/C7: real Cordis gateway dispatch clamps through raw service 
   t.after(() => fiber.dispose())
   await fiber.await()
   assert.ok(Object.hasOwn(raw, 'page'))
+  assert.ok(Object.hasOwn(raw, 'follow'))
   assert.notEqual(raw.page, original)
+  assert.notEqual(raw.follow, originalFollow)
   const input = request({ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 3 } })
   const signal = new AbortController().signal
   const receiver = ctx.extend({ testContextLabel: 'gateway' }).sessionController
   const invoke = () => Reflect.apply(Reflect.get(receiver, 'page'), receiver, [input, signal])
+  const invokeFollow = () => Reflect.apply(Reflect.get(receiver, 'follow'), receiver, [input, signal])
   assert.equal(invoke(), promise)
-  assert.deepEqual(calls[0], {
-    request: request({ maxMessages: 20, turnWindow: { minMessages: 20, minTurns: 3 } }),
-    signal,
-    helper: 'gateway',
-  })
+  assert.equal(invokeFollow(), promise)
+  for (const call of calls) {
+    assert.deepEqual(call, {
+      request: request({ maxMessages: 20, turnWindow: { minMessages: 20, minTurns: 3 } }),
+      signal,
+      helper: 'gateway',
+    })
+  }
   assert.equal(input.maxMessages, 500)
   await fiber.dispose()
   assert.equal(raw.page, original)
+  assert.equal(raw.follow, originalFollow)
   assert.deepEqual(Object.getOwnPropertyDescriptor(raw, 'page'), originalDescriptor)
+  assert.equal(Object.hasOwn(raw, 'follow'), false)
   assert.equal(invoke(), promise)
-  assert.equal(calls[1].request, input)
-  assert.equal(calls[1].helper, 'gateway')
+  assert.equal(calls[2].request, input)
+  assert.equal(calls[2].helper, 'gateway')
+  assert.equal(invokeFollow(), promise)
+  assert.equal(calls[3].request, input)
+  assert.equal(calls[3].helper, 'gateway')
 
   // Real raw services with an existing own descriptor must restore it too.
   Object.defineProperty(raw, 'page', {
@@ -321,11 +423,16 @@ test('C5 revised/C6/C7: real Cordis gateway dispatch clamps through raw service 
   t.after(() => remount.dispose())
   await remount.await()
   invoke()
-  assert.equal(calls[2].request.maxMessages, 30)
+  invokeFollow()
+  assert.equal(calls[4].request.maxMessages, 30)
+  assert.equal(calls[5].request.maxMessages, 30)
   await remount.dispose()
   assert.deepEqual(Object.getOwnPropertyDescriptor(raw, 'page'), ownDescriptor)
+  assert.equal(raw.follow, originalFollow)
   invoke()
-  assert.equal(calls[3].request, input)
+  invokeFollow()
+  assert.equal(calls[6].request, input)
+  assert.equal(calls[7].request, input)
 })
 
 test('C8: host-only package has one insert row, no client half, no runtime dependencies', async () => {

@@ -2,7 +2,15 @@
 
 ## Result and scope
 
-The host-only plugin is implemented and link-installed in the web profile. All 20 automated tests passed, including an integration test with the real installed Cordis service proxy; no test was skipped. The filtered configuration dump and the unmodified profile checker passed. No host restart, second server, upstream edit, profile-patch edit, push, or remote creation was performed. Live activation and the post-restart large-session measurement remain dispatcher-owned and unverified.
+The host-only plugin is implemented and linked into the currently running DSH host, as stated in the task context. The current suite has 25 passing automated tests, including follow snapshot coverage, malformed verifier-response handling, and an integration test with the real installed Cordis service proxy; no test was skipped. The filtered configuration dump and the unmodified profile checker passed in the earlier implementation work. This fix did not touch the linked install, restart a host or another server, edit upstream or profile files, commit, or push. The verifier was then run live against the host and measured the `page` clamp; the `follow` clamp is not loaded until the host restarts.
+
+## Review corrections
+
+The browser's opening history snapshot reaches the server through `sessionController.follow`, so the plugin now shares one request-clamp helper between `page` and `follow`, installs each wrapper independently on the raw service, and restores both during cleanup. Follow tests cover an above-cap request, at/below-cap identity pass-through, turn-window clamping without mutation, cleanup restoration, and duplicate application for both methods. The real-Cordis integration test also verifies that both wrappers mount and restore through the contextual gateway path.
+
+The live verifier now sends a `client-request` envelope (`type`, `rpcId`, `method`, and nested `payload.args.request`) and validates the matching `server-response` envelope before reading the nested `result.ok`, `result.error.message`, or `result.value`. Its tests use fake external commands and include a malformed-envelope failure case. The script was then run live against the host; the result is recorded under "Current follow-up verification".
+
+The repository has `origin` at https://github.com/mortang2410/dsh-session-page-clamp. At the reviewed baseline, `master` and `origin/master` both resolve to `4ff1e078e1822c7dbb2de91ecafdbf73d7288a56`; the changes in this working tree are left uncommitted as requested.
 
 ## Files created
 
@@ -17,7 +25,7 @@ The host-only plugin is implemented and link-installed in the web profile. All 2
 
 ## Seam and dispatcher-approved contract correction
 
-The wrapper caps only explicit positive safe-integer `maxMessages` values above the cap. It makes a new request and nested turn-window object only on that branch, preserves absent fields and `minTurns`, and forwards `this`, the AbortSignal, the exact promise, and errors. Configuration defaults to `{ maxMessages: 50, enabled: true }`; disabled mode installs nothing. Invalid configuration fails with a named field error. A module-level Symbol prevents duplicate wrappers and an effect cleanup restores the exact original descriptor/function.
+The shared wrapper helper caps only explicit positive safe-integer `maxMessages` values above the cap for both `page` and `follow`. It makes a new request and nested turn-window object only on that branch, preserves `minTurns` and other fields, and forwards `this`, the AbortSignal, the exact original result, and errors. Configuration defaults to `{ maxMessages: 50, enabled: true }`; disabled mode installs nothing. Invalid configuration fails with a named field error. Per-method Symbols prevent duplicate wrappers, and cleanup restores each exact original descriptor/function.
 
 The original contextual identity requirement was disproved before completion. An isolated mount against real Cordis printed:
 
@@ -29,29 +37,39 @@ Mount failure: dsh-session-page-clamp: cannot install wrapper on sessionControll
 
 Cordis 4's [createTraceable implementation](</home/wilder/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis/lib/index.js#L123-L151>) returns a new shadow-method Proxy for each contextual function read and redirects contextual writes to a transient shadow. Therefore contextual `svc.page === wrapper` is invalid even when a raw method patch is reachable. The dispatcher explicitly corrected acceptance point 5: "Install on the raw service object", "Define an own property page on raw whose value is the wrapper", and "Acceptance becomes behavioral, not identity".
 
-The implementation unwraps `ctx.sessionController[Symbol.for('cordis.original')]`, falling back to the supplied object if absent. For Cordis it defines an own property on the raw service, verifies raw read-back, and preserves the shadow receiver with `original.apply(this, [effective, signal])`. Plain fake services retain instance assignment/read-back and immediate-prototype fallback, including the frozen-instance and ignored-proxy-write cases. A failed fallback is rolled back; an unreachable method throws at load.
+The implementation unwraps `ctx.sessionController[Symbol.for('cordis.original')]`, falling back to the supplied object if absent. For Cordis it independently defines own `page` and `follow` properties on the raw service and verifies read-back for each. Each non-async wrapper preserves the shadow receiver with `original.apply(this, [effective, signal])`. Plain fake services retain instance assignment/read-back and immediate-prototype fallback, including the frozen-instance and ignored-proxy-write cases. If either method cannot be installed, any earlier installation is rolled back; an unreachable method throws at load.
 
-The [real-Cordis integration test](</home/wilder/git-repos/dsh-session-page-clamp/test/clamp.test.mjs#L261-L330>) resolves Cordis from the installed profile, mounts through `ctx.plugin` and `fiber.await`, then emulates the gateway with `Reflect.apply(Reflect.get(receiver, 'page'), receiver, [request, signal])`. It proves the cap reaches the original, helper methods resolve the invocation context through `this`, signal and promise identity survive, and disposal restores both inherited and existing-own-descriptor cases. Only an unresolvable Cordis installation permits a skip; this run had zero skips.
+The [real-Cordis integration test](</home/wilder/git-repos/dsh-session-page-clamp/test/clamp.test.mjs#L342-L420>) resolves Cordis from the installed profile, mounts through `ctx.plugin` and `fiber.await`, then emulates the gateway with `Reflect.apply(Reflect.get(receiver, method), receiver, [request, signal])` for both methods. It proves both caps reach the originals, helper methods resolve the invocation context through `this`, signal and result identity survive, and disposal restores page and follow, including page's existing-own-descriptor case. Only an unresolvable Cordis installation permits a skip; this run had zero skips.
 
 Config is a dependency-free synchronous Standard Schema, matching the installed Cordis [resolveConfig contract](</home/wilder/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cordis/lib/index.js#L949-L961>). Direct apply and actual Cordis validation both reject invalid values. No runtime dependency or build step was added.
 
 ## Directive and test map
 
-| Contract / dispatcher directive | Implementation | Tests in exact output below |
+| Contract / dispatcher directive | Implementation | Current test numbers |
 | --- | --- | --- |
-| 1: "call the original with a NEW request object" | Wrapper clamping branch in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L80-L94>) | 1 |
-| 2: "minMessages must be clamped"; "Absent fields stay absent." | New turn-window object in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L85-L90>) | 2, 3 |
-| 3: "same object identity" | Inert branch in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L81-L93>) | 4 |
-| 4: defaults, disabled mode, "Invalid config must fail loudly at load" | [Config and apply validation](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L6-L33>) | 5, 6, 7; actual Cordis validation in 16 |
-| 5 revised: "Install on the raw service object"; "Acceptance becomes behavioral, not identity" | [Raw service resolution and verified installation](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L69-L104>) | 8, 9, 10, 11, 12, 16 |
-| 6: "Disposal must restore the exact original function"; "must not stack wrappers" | [Descriptor restoration](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L35-L63>) and Symbol | 8, 9, 10, 11, 13, 16 |
-| 7: "forward this and the signal argument, return the original's promise" | [Ordinary non-async wrapper](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L80-L94>) | 14, 15, 16 |
-| 8: "Only host code." | [Manifest](</home/wilder/git-repos/dsh-session-page-clamp/package.json>) and one-row [bundle patch](</home/wilder/git-repos/dsh-session-page-clamp/cordis.patch.yml>) | 17 |
-| Live verifier: default/override session, 303 cookie mint, cursor discovery, metrics, no credential output | [Verification script](</home/wilder/git-repos/dsh-session-page-clamp/scripts/verify-live.sh>) with real Bash/Python and fake external commands | 18, 19, 20 |
+| 1: "call the original with a NEW request object" | Shared clamp helper in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L68-L89>) | 1, 5, 20 |
+| 2: "minMessages must be clamped"; "Absent fields stay absent." | Cloned turn-window handling in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L72-L79>) | 2, 3, 7, 20 |
+| 3: "same object identity" | Shared pass-through branch in [host plugin](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L68-L70>) | 4, 6 |
+| 4: defaults, disabled mode, "Invalid config must fail loudly at load" | [Config and apply validation](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L9-L35>) | 9, 10, 11, 20 |
+| 5 revised: "Install on the raw service object"; "Acceptance becomes behavioral, not identity" | [Raw service resolution and per-method installation](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L91-L129>) | 12-17, 20 |
+| 6: "Disposal must restore the exact original function"; "must not stack wrappers" | [Per-method Symbols](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L4-L7>) and [descriptor restoration](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L38-L66>) | 12-17, 20 |
+| 7: "forward this and the signal argument, return the original's promise" | [Ordinary non-async wrapper](</home/wilder/git-repos/dsh-session-page-clamp/lib/index.js#L82-L89>) | 18-20 |
+| 8: "Only host code." | [Manifest](</home/wilder/git-repos/dsh-session-page-clamp/package.json>) and one-row [bundle patch](</home/wilder/git-repos/dsh-session-page-clamp/cordis.patch.yml>) | 21 |
+| Live verifier: default/override session, 303 cookie mint, cursor discovery, metrics, no credential output | [Verifier's client-request/server-response envelope handling](</home/wilder/git-repos/dsh-session-page-clamp/scripts/verify-live.sh>) with fake external commands | 22-25 |
 
-The patch-row id is `session-page-clamp`. Its plugin name, package name, and profile bundles-list entry are all `dsh-session-page-clamp`. The row id is deliberately distinct from the package name and matches the supplied repository layout. The filtered composed dump below confirms that row is included; the checker confirms the bundle name matches its installed manifest. Neither proves this new host plugin is active before restart.
+The patch-row id is `session-page-clamp`. Its plugin name, package name, and profile bundles-list entry are all `dsh-session-page-clamp`. The row id is deliberately distinct from the package name and matches the supplied repository layout. The filtered composed dump below confirms that row is included; the checker confirms the bundle name matches its installed manifest. The linked install is live in a running host per task context. The live run below measures the `page` clamp through that host; the `follow` clamp awaits a restart.
 
-## Verification 1: exact node --test output
+## Current follow-up verification
+
+Command: `cd /home/wilder/git-repos/dsh-session-page-clamp && node --test`. Result: exit 0; 25 tests, 25 passed, 0 failed, 0 skipped. Exact TAP summary: `1..25`, `# tests 25`, `# pass 25`, `# fail 0`, `# skipped 0`. This run includes four direct follow tests, duplicate-mount and Cordis coverage for both methods, the full nested verifier envelopes, and a malformed-response failure test.
+
+`bash -n scripts/verify-live.sh && shellcheck scripts/verify-live.sh` and `git diff --check` exited 0.
+
+Live verifier run against the running host (started 2026-10-27 03:32:37 with the page-only wrapper loaded): `scripts/verify-live.sh` printed `cookie_mint_http=303`, `throughSeq=22372`, `bytes=1164500`, `records=226`, `hasMore=true` and exited 0. This exercises the corrected `client-request`/`server-response` envelope and measures the live `page` clamp. The `follow` clamp in this working tree is not loaded by the running process; it is verified by unit and real-Cordis tests only until a host restart.
+
+Mutation check: a repository copy under the permitted scratch area had the wrapper's follow-method branch disabled, then ran `node --test --test-name-pattern='follow:'`. Exit 1; the above-cap, turn-window, and cleanup follow tests failed as expected, while the at/below-cap identity test passed. The scratch copy was moved to `/home/wilder/Trash/dsh-session-page-clamp/mutation-check` after collecting the result; the real repository was not mutated for this check.
+
+## Initial verification for the original page-only implementation
 
 Run from `/home/wilder/git-repos/dsh-session-page-clamp`. Exit code: **0**.
 
@@ -284,19 +302,19 @@ Exact lockfile change:
 
 `pnpm install` exited 0 in 160 ms using pnpm v12.14.0. Its output reported `Packages: -72`, `resolved 166, reused 166, downloaded 0, added 0` and `+ dsh-session-page-clamp <- ../../../git-repos/dsh-session-page-clamp`. The package manager pruned 72 entries as part of its normal resolution; no unrelated manifest or lockfile entry was changed. It also reported deprecated subdependencies, peer warnings, and existing `@liustack/modsearch` skills awaiting approval; no approval or additional dependency install was performed.
 
-## Verification 4: local commit and clean tree
+## Repository and remote state
 
-The implementation and this report will be committed locally, then the exact implementation SHA and post-commit status will be recorded here in a report-only follow-up commit. No remote will be created and nothing will be pushed. A commit cannot contain its own hash; the report records the implementation commit, while the dispatcher receives the final HEAD separately.
+The repository has `origin` at https://github.com/mortang2410/dsh-session-page-clamp. The reviewed baseline was `4ff1e078e1822c7dbb2de91ecafdbf73d7288a56`, with `master` equal to `origin/master`. This fix is committed and pushed after this report; the dispatcher holds the resulting HEAD.
 
 ## Completion Gate
 
-The tool is scoped to this delegated session's `/home/wilder/.dsh` workspace, not the new external repository. Its status is **BLOCKED**, not a pass. Reported blockers: the host change recorder does not record this session, no executable test command is detected for that workspace, and no completion attestation exists yet. Direct verification above covers this repository and the narrowly scoped install diff. A final attestation will preserve the workspace/recorder limitation and the unverified live activation rather than hide them.
+The current gate status is **BLOCKED**, not a pass, because the gate is scoped to this session's `/home/wilder/.dsh` workspace rather than this repository. It reports no change record and no executable tests detected for that workspace. This is a scope/recorder limitation, not a failure of this repository's direct `node --test`, shell, or diff checks. Live `page` behavior is verified by the verifier run above; live `follow` behavior remains unverified until a restart.
 
 ## Activation, verification and rollback
 
-The dispatcher must restart the existing host once all intended changes are ready. Then run the executable [live verifier](</home/wilder/git-repos/dsh-session-page-clamp/scripts/verify-live.sh>), with no argument for the dispatcher's measured large session or one alternate session ID. It mints the API cookie without printing credentials, expects HTTP 303, learns the cursor through an overshoot error, requests `maxMessages: 500`, and prints bytes, records and `hasMore`. Response bodies are bounded to 32 MiB in memory, not stored in scratch. Its mode-600 scratch cookie file is emptied on exit. The script's behavior was tested hermetically, not against live session content.
+The executable [live verifier](</home/wilder/git-repos/dsh-session-page-clamp/scripts/verify-live.sh>) was run against the running host before this fix was committed; it printed the page result recorded under "Current follow-up verification". It mints the API cookie without printing credentials, expects HTTP 303, sends the full `client-request` envelope for `session/page`, learns the cursor through the nested past-cursor error, then validates `server-response.result.value` and prints bytes, records, and `hasMore`. Response bodies are bounded to 32 MiB in memory, not stored in scratch. Its mode-600 scratch cookie file is emptied on exit. A post-restart follow check still needs a host restart; the verifier itself covers `session/page`, not `session/follow`. This task did not restart the host.
 
-Host baseline: `MainPID=3153542`, `ExecMainStartTimestamp=Tue 2026-10-27 03:11:21 +07`. This workstream did not restart that service. New host-plugin activation, an actual reduced large-session response, and any session-creation check remain unverified until the dispatcher performs the post-restart checks. Existing browser-batch registration was verified separately by the checker.
+The linked install is live in a running host per task context, and this fix did not restart the host or inspect the installed copy. The live `session/page` request measured the reduced page (226 records); no live `session/follow` request was made. Session creation was not tested. Existing browser-batch registration was verified separately by the earlier checker.
 
 Rollback: remove only `dsh-session-page-clamp` from the dependency and bundles-list entry in the [web manifest](</home/wilder/.dsh/profiles/web/package.json>), run `pnpm install` there, then have the dispatcher restart the existing host. Do not restore whole baseline files over other sessions' work. The bundle's inserted row disappears with bundle removal.
 
@@ -304,6 +322,6 @@ Rollback: remove only `dsh-session-page-clamp` from the dependency and bundles-l
 
 - The method patch and `cordis.original` symbol are an internal seam. Future Cordis or session-controller upgrades can invalidate it; the real-Cordis test guards the installed behavior but is not a future compatibility guarantee.
 - Prototype fallback affects other instances sharing that exact prototype while mounted.
-- Absent or invalid request budgets intentionally pass to the original validator. One message can contain many event records or bytes. `follow` snapshots and other RPCs are untouched.
+- Absent or invalid request budgets intentionally pass to the original validator. One message can contain many event records or bytes. The opening snapshot budget passed through `follow` is clamped; later follow-stream events and other RPCs are not.
 - Duplicate mounts are skipped, not reference-counted. The first mount owns the cap and cleanup.
-- Unit and isolated integration success, composed config, and browser registration do not prove live activation before restart.
+- Unit and isolated integration success, composed config, and browser registration do not prove how the live host currently handles page/follow requests; no live request was made.

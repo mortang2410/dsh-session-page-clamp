@@ -24,19 +24,31 @@ curl() {
   done
   printf '%s' "$data" | python3 -c '
 import json, os, sys
-request = json.load(sys.stdin)["args"]["request"]
+message = json.load(sys.stdin)
+assert message["type"] == "client-request"
+assert message["rpcId"] == "session-page-clamp-live-verifier"
+assert message["method"] == "session/page"
+request = message["payload"]["args"]["request"]
 assert request["address"] == {"kind": "session", "sessionId": os.environ["EXPECTED_SESSION"]}
 assert request["maxMessages"] == 500
 assert request["turnWindow"] == {"minMessages": 50, "minTurns": 3}
-if request["throughSeq"] == 999999999:
-    message = "unrelated failure" if os.environ["MODE"] == "bad-cursor" else "past cursor 123"
-    print(json.dumps({"ok": False, "error": {"message": message}}))
+def response(result, **envelope):
+    return {"type": envelope.get("type", "server-response"),
+            "rpcId": envelope.get("rpcId", message["rpcId"]), "result": result}
+if os.environ["MODE"] == "malformed-response":
+    print(json.dumps(response({"ok": False, "error": {"code": "gateway/bad-request",
+        "message": "past cursor 123", "details": {}}}, type="wrong-response")))
+elif request["throughSeq"] == 999999999:
+    error = "unrelated failure" if os.environ["MODE"] == "bad-cursor" else "past cursor 123"
+    print(json.dumps(response({"ok": False, "error": {"code": "gateway/bad-request",
+        "message": error, "details": {}}})))
 else:
     assert request["throughSeq"] == 123
     if os.environ["MODE"] == "bad-page":
-        print(json.dumps({"ok": False, "error": {"message": "private content"}}))
+        print(json.dumps(response({"ok": False, "error": {"code": "gateway/internal",
+            "message": "private content", "details": {}}})))
     else:
-        print(json.dumps({"ok": True, "value": {"records": [{"type": "event"}], "hasMore": True}}))
+        print(json.dumps(response({"ok": True, "value": {"records": [{"type": "event"}], "hasMore": True}})))
 '
 }
 export -f journalctl mkdir mktemp chmod curl
@@ -62,7 +74,7 @@ test('live verifier: default session, cursor discovery, request shape and exact 
   const result = run()
   assert.equal(result.status, 0, result.stderr)
   // Python json.dumps in the independent curl stub emits spaces and a newline.
-  const wire = '{"ok": true, "value": {"records": [{"type": "event"}], "hasMore": true}}\n'
+  const wire = '{"type": "server-response", "rpcId": "session-page-clamp-live-verifier", "result": {"ok": true, "value": {"records": [{"type": "event"}], "hasMore": true}}}\n'
   assert.equal(result.stdout, `cookie_mint_http=303\nthroughSeq=123\nbytes=${Buffer.byteLength(wire)}\nrecords=1\nhasMore=true\n`)
   assert.equal(result.stderr, '')
   assert.doesNotMatch(result.stdout, /fixture-token|private content|cookie contents/)
@@ -87,4 +99,12 @@ test('live verifier: fails on missing token, non-303 auth, unexpected cursor or 
     assert.doesNotMatch(result.stdout + result.stderr, /fixture-token|private content|token=/)
     assert.doesNotMatch(result.stdout, /records=|bytes=|hasMore=/)
   }
+})
+
+test('live verifier: malformed response envelope fails loudly without disclosure', () => {
+  const result = run('malformed-response')
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /expected past-cursor error/)
+  assert.doesNotMatch(result.stdout + result.stderr, /fixture-token|past cursor 123|token=/)
+  assert.doesNotMatch(result.stdout, /records=|bytes=|hasMore=/)
 })

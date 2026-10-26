@@ -26,15 +26,23 @@ if [[ "$status" != 303 ]]; then
 fi
 printf 'cookie_mint_http=%s\n' "$status"
 
+RPC_ID=session-page-clamp-live-verifier
+export RPC_ID
+
 payload() {
   python3 -c '
 import json, sys
-print(json.dumps({"args": {"request": {
-    "address": {"kind": "session", "sessionId": sys.argv[1]},
-    "throughSeq": int(sys.argv[2]), "maxMessages": 500,
-    "turnWindow": {"minMessages": 50, "minTurns": 3}
-}}}))
-' "$SESSION" "$1"
+print(json.dumps({
+    "type": "client-request",
+    "rpcId": sys.argv[3],
+    "method": "session/page",
+    "payload": {"args": {"request": {
+        "address": {"kind": "session", "sessionId": sys.argv[1]},
+        "throughSeq": int(sys.argv[2]), "maxMessages": 500,
+        "turnWindow": {"minMessages": 50, "minTurns": 3}
+    }}}
+}))
+' "$SESSION" "$1" "$RPC_ID"
 }
 
 post_page() {
@@ -43,33 +51,39 @@ post_page() {
 }
 
 cursor=$(post_page 999999999 | python3 -c '
-import json, re, sys
+import json, os, re, sys
 body = sys.stdin.buffer.read(1048576)
 try:
-    result = json.loads(body)
+    response = json.loads(body)
+    if response.get("type") != "server-response" or response.get("rpcId") != os.environ["RPC_ID"]:
+        raise ValueError()
+    result = response.get("result")
     message = result.get("error", {}).get("message", "")
     match = re.search(r"past cursor (\d+)", message)
     if result.get("ok") is not False or match is None:
         raise ValueError()
     print(match.group(1))
-except (ValueError, TypeError, AttributeError):
+except (ValueError, TypeError, AttributeError, KeyError):
     sys.exit("ERROR: overshoot did not return the expected past-cursor error")
 ')
 printf 'throughSeq=%s\n' "$cursor"
 # Keep response bytes in memory, not a quota-sensitive scratch file. Do not
 # print records, request content, cookies, or the launch token.
 post_page "$cursor" | python3 -c '
-import json, sys
+import json, os, sys
 limit = 32 * 1024 * 1024
 body = sys.stdin.buffer.read(limit + 1)
 if len(body) > limit:
     sys.exit("ERROR: page response exceeded the 32 MiB in-memory verification limit")
 try:
-    result = json.loads(body)
+    response = json.loads(body)
+    if response.get("type") != "server-response" or response.get("rpcId") != os.environ["RPC_ID"]:
+        raise ValueError()
+    result = response["result"]
     page = result["value"]
     if result.get("ok") is not True or not isinstance(page["records"], list) or type(page["hasMore"]) is not bool:
         raise ValueError()
-except (ValueError, TypeError, KeyError):
+except (ValueError, TypeError, KeyError, AttributeError):
     sys.exit("ERROR: session/page did not return a valid successful page")
 print("bytes=" + str(len(body)))
 print("records=" + str(len(page["records"])))
