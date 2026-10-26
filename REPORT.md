@@ -71,7 +71,7 @@ Mutation check: a repository copy under the permitted scratch area had the wrapp
 
 ## Round-2 review
 
-Round 2 returned "minor fixes" with no P0-P2 findings (report: `/home/wilder/.dsh/.scratch/review-dsh-session-page-clamp/round2.md`). The P3 findings are fixed in this commit: the report states commit `3861d5b` instead of claiming an uncommitted tree (F1); the real-Cordis anchor and the gateway-emulation wording are corrected (F2); and a test now fails when the partial-install rollback is removed (F3). The in-process coercion of a malformed `turnWindow.minMessages` is closed by clamping only safe integers (C4), and the live-run wording no longer claims an isolated measurement (C8).
+Round 2 returned "minor fixes" with no P0-P2 findings (report: `/home/wilder/.dsh/.scratch/review-dsh-session-page-clamp/round2.md`). The P3 findings are fixed in commit `d6e6428`: the report states commit `3861d5b` instead of claiming an uncommitted tree (F1); the real-Cordis anchor and the gateway-emulation wording are corrected (F2); and a test now fails when the partial-install rollback is removed (F3). The in-process coercion of a malformed `turnWindow.minMessages` is closed by clamping only safe integers (C4), and the live-run wording no longer claims an isolated measurement (C8).
 
 Accepted without change: duplicate mounts are still not reference-counted, and the module-local symbols matter only if the package loads twice in one process, which this profile's loader does not do (C6); the launch token still travels in the mint URL for the cookie exchange (C9).
 
